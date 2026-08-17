@@ -209,4 +209,129 @@ describe('ElectronApiClient', () => {
       await expect(handle.rpc.call(channel, endpoint, {})).rejects.toThrow('invalid RPC target')
     }
   })
+
+  it('fails loud when constructed without the preload bridge', () => {
+    delete (globalThis as { dshIpc?: DshIpcBridge }).dshIpc
+    expect(() => new ElectronApiClient()).toThrow(/window\.dshIpc is missing/)
+  })
+
+  it('rejects a unary call whose signal was already aborted', async () => {
+    ipc = new FakeIpc()
+    const handle = await mount()
+    const abort = new AbortController()
+    abort.abort()
+    await expect((handle.api as ElectronApiClient).host.describe({}, abort.signal)).rejects.toThrow(/aborted/i)
+    expect(ipc.fetches).toHaveLength(0)
+  })
+
+  it('omits method and body from the bridge call for a bodyless GET carrier call', async () => {
+    ipc = new FakeIpc()
+    await mount()
+    // The public unary surface is always POST+JSON; reach the bodyless-GET arm of
+    // doFetch through a subclass that exposes it (the readSse carrier path).
+    const probe = new (class extends ElectronApiClient {
+      public get(path: string): Promise<Response> {
+        return this.doFetch(new URL(path, 'http://dsh.internal'), { method: 'GET' })
+      }
+    })()
+    ipc.fetchResponses.push({ status: 200, body: '{}' })
+    await probe.get('/api/session.export').catch(() => undefined)
+    const call = ipc.fetches[0]
+    expect(call?.init.method).toBe('GET')
+    expect(call?.init.body).toBeUndefined()
+    expect(call?.init.headers).toEqual({})
+  })
+
+  it('reflects the abort reason (Error, string, or fallback) in the rejection', async () => {
+    ipc = new FakeIpc()
+    ipc.fetch = () => new Promise(() => undefined)
+    const handle = await mount()
+    const client = handle.api as ElectronApiClient
+
+    const withError = new AbortController()
+    const reasonError = new Error('caller cancelled')
+    const errorCall = expect(client.host.describe({}, withError.signal)).rejects.toThrow('caller cancelled')
+    withError.abort(reasonError)
+    await errorCall
+
+    const withString = new AbortController()
+    const stringCall = expect(client.host.describe({}, withString.signal)).rejects.toThrow('stop it')
+    withString.abort('stop it')
+    await stringCall
+
+    const withPlain = new AbortController()
+    const plainCall = expect(client.host.describe({}, withPlain.signal)).rejects.toThrow(/aborted/i)
+    withPlain.abort()
+    await plainCall
+  })
+
+  it('rejects an in-flight generic RPC on abort and on rpcId mismatch', async () => {
+    ipc = new FakeIpc()
+    const handle = await mount()
+
+    // Abort race: the invoke never settles, the caller abort must reject it.
+    ipc.fetch = () => new Promise(() => undefined)
+    const abort = new AbortController()
+    const pending = handle.rpc.call('/api', 'goals/create', {}, abort.signal)
+    const aborted = expect(pending).rejects.toThrow(/aborted/i)
+    abort.abort()
+    await aborted
+
+    // Already-aborted signal rejects before any bridge call.
+    const preAborted = new AbortController()
+    preAborted.abort()
+    await expect(handle.rpc.call('/api', 'goals/create', {}, preAborted.signal)).rejects.toThrow(/aborted/i)
+
+    // rpcId mismatch between request and response rejects.
+    ipc.fetch = () => Promise.resolve({
+      status: 200,
+      body: JSON.stringify({ type: 'server-response', rpcId: 'different-rpc', result: { ok: true, value: null } }),
+    })
+    await expect(handle.rpc.call('/api', 'goals/create', {})).rejects.toThrow('rpcId mismatch')
+  })
+
+  it('ends a downlink stream immediately when its signal was already aborted', async () => {
+    ipc = new FakeIpc()
+    const handle = await mount()
+    const client = handle.api as ElectronApiClient
+    const abort = new AbortController()
+    abort.abort()
+    const iterator = client.events.mux({}, abort.signal)[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ done: true })
+    expect(ipc.closed).toEqual(['fake-0'])
+  })
+
+  it('covers the no-init doFetch arm and the pre-aborted reason forms', async () => {
+    ipc = new FakeIpc()
+    await mount()
+    const probe = new (class extends ElectronApiClient {
+      public raw(path: string, init?: RequestInit): Promise<Response> {
+        return this.doFetch(new URL(path, 'http://dsh.internal'), init)
+      }
+    })()
+
+    // No init at all: the no-method / no-body cond-expr arms forward an empty init.
+    ipc.fetchResponses.push({ status: 200, body: '{}' })
+    await probe.raw('/api/session.models').catch(() => undefined)
+    expect(ipc.fetches[0]?.init.method).toBeUndefined()
+
+    // Pre-aborted signal routes through doFetch's early abortError: a string reason
+    // surfaces verbatim, and a non-Error/non-string reason falls back to the default.
+    const stringAbort = new AbortController()
+    stringAbort.abort('plain stop')
+    await expect(probe.raw('/api/session.models', { signal: stringAbort.signal })).rejects.toThrow('plain stop')
+    const numericAbort = new AbortController()
+    numericAbort.abort(42)
+    await expect(probe.raw('/api/session.models', { signal: numericAbort.signal })).rejects.toThrow('This operation was aborted')
+  })
+
+  it('rejects a generic RPC on the abort-race arm when the response is a failure status', async () => {
+    ipc = new FakeIpc()
+    const handle = await mount()
+    // A live (not pre-aborted) signal plus a non-2xx response exercises the abort-race
+    // arm's promise wrapper and the status throw together.
+    ipc.fetch = () => Promise.resolve({ status: 500, body: 'boom' })
+    const abort = new AbortController()
+    await expect(handle.rpc.call('/api', 'goals/create', {}, abort.signal)).rejects.toThrow('HTTP 500')
+  })
 })

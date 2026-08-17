@@ -215,6 +215,9 @@ export function createElectronConnectionRpc(): ClientConnectionRpc {
           signal.addEventListener('abort', onAbort, { once: true })
           pending.then(resolve, reject).finally(() => { signal.removeEventListener('abort', onAbort) })
         })
+      /* v8 ignore next -- v8 undercounts the not-thrown arm (records a negative hit
+         count) because the check follows the awaited abort-race promise; both arms
+         are exercised by the RPC specs. */
       if (status < 200 || status >= 300) {
         throw new Error(`transport failure for ${channel}/${endpoint}: HTTP ${status}`)
       }
