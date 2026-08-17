@@ -742,6 +742,7 @@
     },
     "apps/electron": {
       "entry": [
+        "src/main.ts",
         "src/preload.js"
       ],
       "project": [
