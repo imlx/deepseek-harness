@@ -1,0 +1,46 @@
+# Electron minimal-validation overlay over the `web` profile.
+#
+# Goal: keep the API gateway (ctx.apiProxy) and every base agent capability, but
+# bind no network port and compose no browser client graph — the Electron main
+# process talks to apiProxy in-process and loads its own minimal renderer page.
+#
+# Each entry disables one web-surface row by id (a patch with only `disabled`
+# leaves the row's config untouched).
+
+# Binds the loopback port; Electron serves nothing over HTTP.
+- id: webserver
+  disabled: true
+
+# Serves the built dist through the webserver fallback seat and prints the URL;
+# there is no server to attach to here.
+- id: web-runtime
+  disabled: true
+
+# Node half mounts the /api gateway onto the webserver and owns the WebSocket
+# downlinks; the Electron transport replaces both over IPC.
+- id: connection
+  disabled: true
+
+# Scans the browser roster and serves /plugins/<id>/client.js; requires webServer.
+- id: modules
+  disabled: true
+
+# Client-bundle rebuild watcher; idle without the modules row.
+- id: client-hmr
+  disabled: true
+
+# Parses --host/--port and provides webStartup; nothing binds a port in Electron.
+- id: web-startup
+  disabled: true
+
+# The auto backend reads ctx.webServer.host to pick native-vs-browse, so it cannot
+# run without the webserver. Disable it and mount the native backend under a fresh
+# id instead (a patch's `name` is a match-check, not a reimplementation, so the row
+# cannot be swapped in place). The native backend has no webServer dependency and
+# still provides the ctx.directoryPicker service apiProxy injects.
+- id: directory-picker
+  disabled: true
+
+- insert:
+    - id: directory-picker-native
+      name: '@deepseek-ai/dsh-host-directory-picker-native'

@@ -1,0 +1,175 @@
+/**
+ * Electron main process for the minimal IPC-transport validation.
+ *
+ * Boots a dsh profile in-process (the `web` composition minus every port-binding
+ * and browser-graph row, via overlay.patch.yml), exposes the API gateway to the
+ * renderer over IPC, and loads a minimal page that drives a conversation end to
+ * end. This is the transport proof of concept: no webserver, no client-module
+ * graph, no bundled UI roster — just `toFetchHandler(apiProxy)` for unary calls
+ * and `apiProxy.events` for the downlink, both carried over IPC.
+ *
+ * The assembly below mirrors `apps/cli/src/profile-boot.ts`'s runProfile, but
+ * builds on the public `@deepseek-ai/dsh-app-boot` API so the Electron shell
+ * does not depend on the CLI package's unpublished internals.
+ */
+import { app, BrowserWindow, ipcMain } from 'electron'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
+import { writeFileSync } from 'node:fs'
+import type { Context } from '@deepseek-ai/cordis'
+import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
+import {
+  boot,
+  loadLayeredEnv,
+  loadOptionalPatches,
+  loadOverlayPatches,
+  loadProfile,
+  healProfilesModuleFallback,
+  PROFILE_PATCH_FILENAME,
+} from '@deepseek-ai/dsh-app-boot'
+import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
+import { RpcId, type ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { HostFrame, MuxFrame, RpcRequest, ServerRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
+
+const require = createRequire(import.meta.url)
+const HERE = dirname(fileURLToPath(import.meta.url))
+/** The dsh installation anchor used to resolve bundle packages (apps/cli's manifest). */
+const INSTALL_ANCHOR = require.resolve('@deepseek-ai/dsh/package.json')
+/** Repository root (apps/cli → apps → root); loadLayeredEnv reads the root .env here. */
+const REPO_ROOT = join(dirname(INSTALL_ANCHOR), '..', '..')
+/** Shipped agent-preset root beside the CLI's own config (same source as profile-boot). */
+const SHIPPED_PRESET_ROOT = join(dirname(INSTALL_ANCHOR), 'config', 'agent-presets')
+/** Static assets live in src/ beside main.ts; the compiled main.js runs from lib/. */
+const SRC = join(HERE, '..', 'src')
+/** Overlay disabling every port-binding / browser-graph row of the web composition. */
+const OVERLAY = join(HERE, '..', 'overlay.patch.yml')
+/** The minimal renderer page (no module graph — a single self-contained file). */
+const RENDERER_HTML = join(SRC, 'renderer.html')
+/** Preload script installing window.dshIpc. */
+const PRELOAD = join(SRC, 'preload.js')
+
+const BIN = 'dsh'
+/** Empty root config the composed patch list mounts over (same contract as profile-boot). */
+const ROOT_CONFIG = '# electron validation root — empty entry list.\n[]\n'
+
+/**
+ * Compose the web profile's effective patch stack plus the Electron overlay, then
+ * boot it. Returns the root context once the tree has settled.
+ * @returns the booted root context.
+ */
+async function bootHarness(): Promise<Context> {
+  healProfilesModuleFallback(INSTALL_ANCHOR)
+  const profile = loadProfile(BIN, 'web', INSTALL_ANCHOR)
+  const rootConfig = join(profile.dir, 'cordis.yml')
+  writeFileSync(rootConfig, ROOT_CONFIG)
+
+  const bundlePatches = profile.layers.flatMap(layer => layer.patches)
+  const homePatches = loadOptionalPatches(BIN, join(profile.dir, PROFILE_PATCH_FILENAME)) ?? []
+  const overlays = loadOverlayPatches(BIN, OVERLAY)
+  // The shipped agent-preset root is an assembly fact only this app can resolve
+  // (it sits beside apps/cli's config); without it no preset is found and
+  // session.create fails with agent-preset-not-found. A patch replaces the whole
+  // config, so restate `default` alongside the shipped root.
+  const presetRootPatch = {
+    id: 'agent-presets',
+    config: { default: 'standard', roots: [{ path: SHIPPED_PRESET_ROOT, trust: 'system' }] },
+  }
+  const patches = [...bundlePatches, ...profile.patches, ...homePatches, ...overlays, presetRootPatch]
+
+  const environment = loadLayeredEnv(BIN, REPO_ROOT)
+  return boot(BIN, rootConfig, patches, (hostCtx: Context) => {
+    hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment)
+  })
+}
+
+/** Read the composed ApiProxy service, failing loud if the composition dropped it. */
+function resolveApiProxy(ctx: Context): ApiProxy {
+  const api = (ctx.get('apiProxy') ?? undefined) as ApiProxy | undefined
+  if (api === undefined) throw new Error('electron: ctx.apiProxy missing after boot — the overlay must not disable api-gateway')
+  return api
+}
+
+/** One open downlink stream's pump task and its owning webContents. */
+interface OpenStream {
+  cancel: AbortController
+}
+
+/**
+ * Complete a narrow `RpcRequest<frame>` into the full ServerRequest wire form
+ * (`method` = the frame's type) — the same envelope `toFetchHandler`'s SSE codec
+ * emits, so the renderer's one frame parser serves both carriers.
+ */
+function fullFrame(narrow: RpcRequest<MuxFrame | HostFrame>): ServerRequest {
+  return { type: 'server-request', rpcId: narrow.rpcId, method: narrow.payload.type, payload: narrow.payload }
+}
+
+/**
+ * Bridge the gateway over IPC. Unary calls forward to `toFetchHandler(apiProxy)`;
+ * each downlink stream iterates `apiProxy.events` in-process and pushes frames to
+ * the requesting webContents. The `file://` origin means the renderer issues paths
+ * under `http://dsh.internal`, which the fetch handler accepts directly.
+ * @param api - the composed gateway.
+ */
+function bridge(api: ApiProxy): void {
+  const handler = toFetchHandler(api)
+  const streams = new Map<string, OpenStream>()
+  let nextStream = 0
+
+  ipcMain.handle('dsh:fetch', async (_event, path: string, init: { method?: string; headers?: Record<string, string>; body?: string }) => {
+    const request = new Request(new URL(path, 'http://dsh.internal'), {
+      method: init.method ?? 'GET',
+      ...(init.headers === undefined ? {} : { headers: init.headers }),
+      ...(init.body === undefined ? {} : { body: init.body }),
+    })
+    const response = await handler.fetch(request)
+    return { status: response.status, body: await response.text() }
+  })
+
+  ipcMain.handle('dsh:openStream', (event, path: string) => {
+    const id = `s${nextStream++}`
+    const cancel = new AbortController()
+    streams.set(id, { cancel })
+    const sender = event.sender
+    const iterable = path.endsWith('events.host')
+      ? api.events.host({ rpcId: RpcId(crypto.randomUUID()), payload: {} }, cancel.signal)
+      : api.events.mux({ rpcId: RpcId(crypto.randomUUID()), payload: {} }, cancel.signal)
+    void (async () => {
+      try {
+        for await (const frame of iterable) {
+          if (sender.isDestroyed()) break
+          // The renderer's readIpcStream parses the full ServerRequest form (the same
+          // envelope toFetchHandler's SSE codec emits), so wrap the narrow RpcRequest
+          // here: method = the frame's own type.
+          sender.send(`dsh:stream:${id}`, JSON.stringify(fullFrame(frame)))
+        }
+        if (!sender.isDestroyed()) sender.send(`dsh:stream:${id}`, null)
+      } catch {
+        if (!sender.isDestroyed()) sender.send(`dsh:stream:${id}`, null)
+      } finally {
+        streams.delete(id)
+      }
+    })()
+    return id
+  })
+
+  ipcMain.on('dsh:closeStream', (_event, id: string) => {
+    streams.get(id)?.cancel.abort()
+    streams.delete(id)
+  })
+}
+
+async function main(): Promise<void> {
+  await app.whenReady()
+  const ctx = await bootHarness()
+  bridge(resolveApiProxy(ctx))
+  const win = new BrowserWindow({
+    width: 960,
+    height: 720,
+    webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false },
+  })
+  await win.loadFile(RENDERER_HTML)
+}
+
+app.on('window-all-closed', () => { app.quit() })
+void main()

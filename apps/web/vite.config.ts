@@ -91,6 +91,10 @@ function npmPackageOf(id: string): string | undefined {
 
 export default defineConfig({
   plugins: [rejectStandaloneServe(), react()],
+  // Relative asset base: the same dist must load over both the webserver (any
+  // mounted path) and Electron's file:// (where a root-absolute `/assets/…`
+  // would resolve to the filesystem root). Relative refs serve both.
+  base: './',
   build: {
     sourcemap: true,
     rollupOptions: {

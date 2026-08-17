@@ -1,0 +1,22 @@
+{
+  "name": "@deepseek-ai/dsh-electron",
+  "description": "Electron desktop shell: main process boots a dsh profile, loads the built frontend over file://, and bridges fetch + downlink over IPC",
+  "version": "0.1.0-rc.5",
+  "private": true,
+  "type": "module",
+  "main": "lib/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh": "workspace:^",
+    "@deepseek-ai/dsh-app-boot": "workspace:^",
+    "@deepseek-ai/dsh-host-apiproxy": "workspace:^",
+    "@deepseek-ai/dsh-launch-environment": "workspace:^"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "electron": "^37.0.0"
+  }
+}
