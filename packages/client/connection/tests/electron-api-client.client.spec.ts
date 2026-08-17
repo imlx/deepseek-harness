@@ -81,7 +81,7 @@ async function mount(): Promise<ConnectionHandle> {
 }
 
 /** Wrap a MuxFrame/HostFrame into the full ServerRequest envelope the bridge carries. */
-function serverRequest(rpcId: string, frame: { type: string }): string {
+function serverRequest(rpcId: string, frame: { type: string } & Record<string, unknown>): string {
   return JSON.stringify({ type: 'server-request', rpcId, method: frame.type, payload: frame })
 }
 
