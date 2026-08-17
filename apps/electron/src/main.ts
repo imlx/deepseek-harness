@@ -16,7 +16,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import {
@@ -31,6 +31,7 @@ import {
 import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { RpcId, type ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { HostFrame, MuxFrame, RpcRequest, ServerRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
+import { composeElectronGraph, injectBootManifest } from './graph.ts'
 
 const require = createRequire(import.meta.url)
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -44,10 +45,12 @@ const SHIPPED_PRESET_ROOT = join(dirname(INSTALL_ANCHOR), 'config', 'agent-prese
 const SRC = join(HERE, '..', 'src')
 /** Overlay disabling every port-binding / browser-graph row of the web composition. */
 const OVERLAY = join(HERE, '..', 'overlay.patch.yml')
-/** The minimal renderer page (no module graph — a single self-contained file). */
-const RENDERER_HTML = join(SRC, 'renderer.html')
+/** The built web frontend index, loaded over file:// after the boot graph is injected. */
+const DIST_INDEX = join(REPO_ROOT, 'apps', 'web', 'dist', 'index.html')
 /** Preload script installing window.dshIpc. */
 const PRELOAD = join(SRC, 'preload.js')
+/** Client packages forced into the graph although their host row is disabled (no webserver). */
+const FORCED_CLIENT_PACKAGES = ['@deepseek-ai/dsh-client-connection'] as const
 
 const BIN = 'dsh'
 /** Empty root config the composed patch list mounts over (same contract as profile-boot). */
@@ -55,10 +58,11 @@ const ROOT_CONFIG = '# electron validation root — empty entry list.\n[]\n'
 
 /**
  * Compose the web profile's effective patch stack plus the Electron overlay, then
- * boot it. Returns the root context once the tree has settled.
- * @returns the booted root context.
+ * boot it. Returns the root context and the profile dir (the module-resolution
+ * anchor the client-graph composer needs) once the tree has settled.
+ * @returns the booted root context and the profile directory.
  */
-async function bootHarness(): Promise<Context> {
+async function bootHarness(): Promise<{ ctx: Context; profileDir: string }> {
   healProfilesModuleFallback(INSTALL_ANCHOR)
   const profile = loadProfile(BIN, 'web', INSTALL_ANCHOR)
   const rootConfig = join(profile.dir, 'cordis.yml')
@@ -78,9 +82,10 @@ async function bootHarness(): Promise<Context> {
   const patches = [...bundlePatches, ...profile.patches, ...homePatches, ...overlays, presetRootPatch]
 
   const environment = loadLayeredEnv(BIN, REPO_ROOT)
-  return boot(BIN, rootConfig, patches, (hostCtx: Context) => {
+  const ctx = await boot(BIN, rootConfig, patches, (hostCtx: Context) => {
     hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment)
   })
+  return { ctx, profileDir: profile.dir }
 }
 
 /** Read the composed ApiProxy service, failing loud if the composition dropped it. */
@@ -161,14 +166,23 @@ function bridge(api: ApiProxy): void {
 
 async function main(): Promise<void> {
   await app.whenReady()
-  const ctx = await bootHarness()
+  const { ctx, profileDir } = await bootHarness()
   bridge(resolveApiProxy(ctx))
+
+  // Compose the client module graph without a webserver and inject it into the
+  // built frontend index. The injected copy lives beside index.html so its
+  // relative asset refs (./assets/…) keep resolving against the dist directory.
+  const { graph } = composeElectronGraph(ctx, profileDir, FORCED_CLIENT_PACKAGES)
+  const html = injectBootManifest(readFileSync(DIST_INDEX, 'utf8'), graph)
+  const electronIndex = join(dirname(DIST_INDEX), 'index.electron.html')
+  writeFileSync(electronIndex, html)
+
   const win = new BrowserWindow({
     width: 960,
     height: 720,
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false },
   })
-  await win.loadFile(RENDERER_HTML)
+  await win.loadFile(electronIndex)
 }
 
 app.on('window-all-closed', () => { app.quit() })

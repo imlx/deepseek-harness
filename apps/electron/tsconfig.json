@@ -15,7 +15,9 @@
     "declaration": false,
     "sourceMap": false,
     "noEmit": false,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "types": ["node"]
   },
-  "include": ["src/main.ts", "src/probe.ts"]
+  "include": ["src/main.ts", "src/graph.ts", "src/probe.ts"]
 }

@@ -6,6 +6,10 @@
  * Contract (mirrors DshIpcBridge in dsh-client-connection's electron-api-client):
  * unary calls go through a single invoke channel; each downlink stream gets a
  * per-stream send channel keyed by the id openStream returns.
+ *
+ * Client plugin bundles load as ordinary file:// classic scripts — the composed
+ * graph rows carry absolute file:// URLs, so the module system's default
+ * loadBundle works unchanged and no bundle-path bridge is needed here.
  */
 const { contextBridge, ipcRenderer } = require('electron')
 
