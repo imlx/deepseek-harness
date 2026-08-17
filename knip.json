@@ -740,6 +740,15 @@
         "@deepseek-ai/.+"
       ]
     },
+    "apps/electron": {
+      "entry": [
+        "src/preload.js"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "src/**/*.js"
+      ]
+    },
     "packages/client/modules": {
       "entry": [
         "tests/**/*.spec.ts"

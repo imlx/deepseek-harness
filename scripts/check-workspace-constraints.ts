@@ -56,6 +56,10 @@ const appPackageFiles: Readonly<Record<string, readonly string[]>> = {
   // The Web build emits sourcemaps for browser debugging; publishing them is
   // what the payload policy forbids, so the bundle ships without them.
   '@deepseek-ai/dsh-web-frontend': ['dist', '!dist/**/*.map'],
+  // The Electron shell ships its compiled main process and the overlay patch that
+  // turns the web composition into the no-webserver desktop one; the preload and
+  // frontend dist arrive through the dsh-web-frontend dependency.
+  '@deepseek-ai/dsh-electron': ['lib/*.js', 'overlay.patch.yml'],
 }
 
 /** The subset of package.json fields this constraint check cares about. */

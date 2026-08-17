@@ -2,9 +2,20 @@
   "name": "@deepseek-ai/dsh-electron",
   "description": "Electron desktop shell: main process boots a dsh profile, loads the built frontend over file://, and bridges fetch + downlink over IPC",
   "version": "0.1.0-rc.5",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "apps/electron"
+  },
   "type": "module",
   "main": "lib/main.js",
+  "files": [
+    "lib/*.js",
+    "overlay.patch.yml"
+  ],
   "scripts": {
     "start": "electron ."
   },
