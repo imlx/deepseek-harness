@@ -28,6 +28,7 @@ import {
   healProfilesModuleFallback,
   PROFILE_PATCH_FILENAME,
 } from '@deepseek-ai/dsh-app-boot'
+import { HostConnectionService } from '@deepseek-ai/dsh-client-connection'
 import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { RpcId, type ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { HostFrame, MuxFrame, RpcRequest, ServerRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
@@ -58,11 +59,15 @@ const ROOT_CONFIG = '# electron validation root — empty entry list.\n[]\n'
 
 /**
  * Compose the web profile's effective patch stack plus the Electron overlay, then
- * boot it. Returns the root context and the profile dir (the module-resolution
- * anchor the client-graph composer needs) once the tree has settled.
- * @returns the booted root context and the profile directory.
+ * boot it. The host Connection RPC service is provided in the prepare hook so the
+ * Typert gateway's `ctx.inject(['connection'])` resolves at mount and registers
+ * its Remote interceptor - without it every Remote endpoint (plugin inventory,
+ * goals, cordis) would fall through to the unary fallback and 404. Returns the
+ * root context, the profile dir (the module-resolution anchor the client-graph
+ * composer needs), and the Connection service once the tree has settled.
+ * @returns the booted root context, the profile directory, and the Connection service.
  */
-async function bootHarness(): Promise<{ ctx: Context; profileDir: string }> {
+async function bootHarness(): Promise<{ ctx: Context; profileDir: string; connection: HostConnectionService }> {
   healProfilesModuleFallback(INSTALL_ANCHOR)
   const profile = loadProfile(BIN, 'web', INSTALL_ANCHOR)
   const rootConfig = join(profile.dir, 'cordis.yml')
@@ -82,10 +87,18 @@ async function bootHarness(): Promise<{ ctx: Context; profileDir: string }> {
   const patches = [...bundlePatches, ...profile.patches, ...homePatches, ...overlays, presetRootPatch]
 
   const environment = loadLayeredEnv(BIN, REPO_ROOT)
+  let connection: HostConnectionService | undefined
   const ctx = await boot(BIN, rootConfig, patches, (hostCtx: Context) => {
     hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment)
+    // The overlay disables the connection row (its host half injects webServer),
+    // but the shell still needs the host Connection RPC registry: instantiating the
+    // service here provides ctx.connection on the root, and its interceptor path
+    // never touches a webServer. Only the handle() channel registration would, and
+    // the Electron composition routes every /api call through the shell's bridge.
+    connection = new HostConnectionService(hostCtx, [])
   })
-  return { ctx, profileDir: profile.dir }
+  if (connection === undefined) throw new Error('electron: HostConnectionService was not created during prepare')
+  return { ctx, profileDir: profile.dir, connection }
 }
 
 /** Read the composed ApiProxy service, failing loud if the composition dropped it. */
@@ -110,14 +123,18 @@ function fullFrame(narrow: RpcRequest<MuxFrame | HostFrame>): ServerRequest {
 }
 
 /**
- * Bridge the gateway over IPC. Unary calls forward to `toFetchHandler(apiProxy)`;
- * each downlink stream iterates `apiProxy.events` in-process and pushes frames to
- * the requesting webContents. The `file://` origin means the renderer issues paths
- * under `http://dsh.internal`, which the fetch handler accepts directly.
+ * Bridge the gateway over IPC. Unary POSTs dispatch through the Connection
+ * service's shared-channel handler - the Typert Remote interceptor claims its
+ * endpoints first, the unary routes of `toFetchHandler(apiProxy)` answer the
+ * rest - the same order the web `/api` route serves. Each downlink stream
+ * iterates `apiProxy.events` in-process and pushes frames to the requesting
+ * webContents. The `file://` origin means the renderer issues paths under
+ * `http://dsh.internal`, which the fetch handler accepts directly.
  * @param api - the composed gateway.
+ * @param connection - the host Connection RPC service holding the interceptor registry.
  */
-function bridge(api: ApiProxy): void {
-  const handler = toFetchHandler(api)
+function bridge(api: ApiProxy, connection: HostConnectionService): void {
+  const handler = connection.createSharedFetchHandler('/api', toFetchHandler(api))
   const streams = new Map<string, OpenStream>()
   let nextStream = 0
 
@@ -166,8 +183,8 @@ function bridge(api: ApiProxy): void {
 
 async function main(): Promise<void> {
   await app.whenReady()
-  const { ctx, profileDir } = await bootHarness()
-  bridge(resolveApiProxy(ctx))
+  const { ctx, profileDir, connection } = await bootHarness()
+  bridge(resolveApiProxy(ctx), connection)
 
   // Compose the client module graph without a webserver and inject it into the
   // built frontend index. The injected copy lives beside index.html so its

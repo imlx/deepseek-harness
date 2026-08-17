@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/proposed/architecture/2026-08-14-electron-file-ipc-transport.md
-2026-08-14-electron-file-ipc-transport.md: eedc299270f479f99774584351b28e9bd7b531f3
-2026-08-14-electron-file-ipc-transport.zh.md: ba243dc04b019e65fc621c61acc4e17df0191575
+2026-08-14-electron-file-ipc-transport.md: b400e713cf3bea81bc5e0da882d60898009f234f
+2026-08-14-electron-file-ipc-transport.zh.md: 62a4a7b23416692e7890c43d060218875db8e20d

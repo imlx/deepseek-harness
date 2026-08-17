@@ -17,7 +17,11 @@
   disabled: true
 
 # Node half mounts the /api gateway onto the webserver and owns the WebSocket
-# downlinks; the Electron transport replaces both over IPC.
+# downlinks; the Electron transport replaces both over IPC. The shell still
+# needs the host Connection RPC registry (the Typert gateway registers its
+# Remote interceptor against ctx.connection), so the main process instantiates
+# HostConnectionService in-process - its interceptor path never touches a
+# webServer.
 - id: connection
   disabled: true
 

@@ -14,7 +14,7 @@ dsh 目前提供浏览器（`web`）、一次性（`headless`）、CLI 与 ACP �
 
 1. **渲染进程经 `file://` 加载 `apps/web/dist`。** 前端已是纯 Vite 构建（`@deepseek-ai/dsh-web-frontend`）；渲染进程无需本地 HTTP 服务器。
 2. **在现有 `connection` 包内实现 IPC transport。** 新增 `ElectronApiClient extends AbstractApiClient`，用 preload 安装的 `window.dshIpc` 桥实现 `doFetch`，并 override `openMux`/`openHost` 以经 IPC 接收服务端推送帧、替代 WebSocket——正如 `WebApiClient` 为浏览器 override 这两个方法一样。connection 插件的 client `apply()` 增加一个并列分支：当 `window.dshIpc` 存在时选择 `ElectronApiClient` 加一个 IPC 通用 RPC 调用器，与现有 `?fixture` 分支和浏览器分支并列。这保持了整个 `ConnectionController` 重连循环、`ConnectionHandle` 组装与 RPC 校验的共享，只改两个 transport 选择点。
-3. **一个 Electron 主进程壳（`apps/electron`）。** 主进程经公开的 `@deepseek-ai/dsh-app-boot` API 在进程内引导一个 dsh profile，经 overlay patch 禁用每个绑定端口与浏览器图的行，并桥接网关：unary 调用转发到 `toFetchHandler(apiProxy)`，每个下行流在进程内迭代 `apiProxy.events` 并经 IPC 把帧推给渲染进程。不挂 `webserver`、不设浏览器信任围栏——主进程是同一应用，HTTP 威胁模型在此不适用。
+3. **一个 Electron 主进程壳（`apps/electron`）。** 主进程经公开的 `@deepseek-ai/dsh-app-boot` API 在进程内引导一个 dsh profile，经 overlay patch 禁用每个绑定端口与浏览器图的行，并桥接网关：它在根上下文实例化 `HostConnectionService`，让 Typert gateway 注册其 Remote interceptor；unary POST 经该服务的共享通道 handler 分发--interceptor 优先认领 Remote 端点，`toFetchHandler(apiProxy)` 的 unary 路由兜底，与 web `/api` 路由的次序一致。每个下行流在进程内迭代 `apiProxy.events` 并经 IPC 把帧推给渲染进程。不挂 `webserver`、不设浏览器信任围栏--主进程是同一应用，HTTP 威胁模型在此不适用。
 4. **原生能力落地为接缝 Provider**，遵循 `packages/host/directory-picker-native`——绝不硬编码进壳。
 
 工作分阶段进行：IPC transport 与一个最小壳先端到端证明载体可行；完整动态模块系统 UI（无 webserver 组图）与上游门禁在 transport 被证明后跟进。
