@@ -177,6 +177,12 @@ async function main(): Promise<void> {
   const electronIndex = join(dirname(DIST_INDEX), 'index.electron.html')
   writeFileSync(electronIndex, html)
 
+  // Dispose the composed tree before quitting: every plugin's effects unwind
+  // (fibers, watchers, open downlink streams) rather than leaking past exit.
+  app.on('window-all-closed', () => {
+    void ctx.fiber.dispose().finally(() => { app.quit() })
+  })
+
   const win = new BrowserWindow({
     width: 960,
     height: 720,
@@ -185,5 +191,4 @@ async function main(): Promise<void> {
   await win.loadFile(electronIndex)
 }
 
-app.on('window-all-closed', () => { app.quit() })
 void main()
