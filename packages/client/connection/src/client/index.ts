@@ -8,6 +8,7 @@ import type { HostDescription, IApiClient } from './api.ts'
 import { ConnectionController, type ConnectionConfig, type ConnectionSinks, type ConnectionState } from './connection.ts'
 import { FixtureApiClient } from './fixture.ts'
 import { WebApiClient } from './web-api-client.ts'
+import { ElectronApiClient, createElectronConnectionRpc, isElectronBridge } from './electron-api-client.ts'
 import { createWebConnectionRpc } from './rpc.ts'
 import { isLoopbackHostname } from '../loopback-hostname.ts'
 import type { ClientConnectionRpc } from '../rpc.ts'
@@ -85,8 +86,13 @@ export function apply(ctx: Context): void {
   const pageLocation = typeof location === 'undefined' ? undefined : location
   const fixture = pageLocation !== undefined && new URLSearchParams(pageLocation.search).has('fixture')
   const fixtureClient = fixture ? new FixtureApiClient() : undefined
-  const api: IApiClient = fixtureClient ?? new WebApiClient()
-  const rpc = fixtureClient?.rpc ?? createWebConnectionRpc()
+  // Transport selection by page mode: the fixture query wins (test pages), then the
+  // Electron preload bridge (window.dshIpc), then the default browser HTTP/WebSocket
+  // carrier. Electron shares the full ConnectionController reconnect loop; only the
+  // api carrier and the generic-RPC caller differ.
+  const electron = !fixture && isElectronBridge()
+  const api: IApiClient = fixtureClient ?? (electron ? new ElectronApiClient() : new WebApiClient())
+  const rpc = fixtureClient?.rpc ?? (electron ? createElectronConnectionRpc() : createWebConnectionRpc())
   let started = false
   let description: HostDescription | undefined
   const descriptionListeners = new Set<() => void>()
