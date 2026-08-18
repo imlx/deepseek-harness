@@ -14,9 +14,9 @@
  */
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
-import { writeFileSync, readFileSync } from 'node:fs'
+import { writeFileSync, readFileSync, existsSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import {
@@ -34,20 +34,33 @@ import { RpcId, type ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { HostFrame, MuxFrame, RpcRequest, ServerRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { composeElectronGraph, injectBootManifest } from './graph.ts'
 
-const require = createRequire(import.meta.url)
 const HERE = dirname(fileURLToPath(import.meta.url))
+// Module resolution anchor: packaged ships the flattened dsh runtime at app/runtime/
+// (asar is off, so paths are real and back the loader's realpath-based symlinks); the
+// main process resolves plugins from there. In dev, packages resolve through the
+// monorepo's own node_modules, so the anchor is this file's location.
+const PACKAGED_RUNTIME = join(HERE, '..', 'runtime', 'node_modules')
+const require = existsSync(PACKAGED_RUNTIME)
+  ? createRequire(join(PACKAGED_RUNTIME, 'anchor.js'))
+  : createRequire(import.meta.url)
 /** The dsh installation anchor used to resolve bundle packages (apps/cli's manifest). */
 const INSTALL_ANCHOR = require.resolve('@deepseek-ai/dsh/package.json')
 /** Repository root (apps/cli → apps → root); loadLayeredEnv reads the root .env here. */
 const REPO_ROOT = join(dirname(INSTALL_ANCHOR), '..', '..')
 /** Shipped agent-preset root beside the CLI's own config (same source as profile-boot). */
 const SHIPPED_PRESET_ROOT = join(dirname(INSTALL_ANCHOR), 'config', 'agent-presets')
-/** Static assets live in src/ beside main.ts; the compiled main.js runs from lib/. */
-const SRC = join(HERE, '..', 'src')
-/** Overlay disabling every port-binding / browser-graph row of the web composition. */
-const OVERLAY = join(HERE, '..', 'overlay.patch.yml')
-/** The built web frontend index, loaded over file:// after the boot graph is injected. */
-const DIST_INDEX = join(REPO_ROOT, 'apps', 'web', 'dist', 'index.html')
+/** Static assets: in dev main.js runs from lib/ with assets in src/; packaged ships preload.js beside main.js. */
+const SRC = existsSync(join(HERE, 'preload.js')) ? HERE : join(HERE, '..', 'src')
+/** Overlay patch: src/ in dev (HERE is lib/), beside main.js when packaged. */
+const OVERLAY = existsSync(join(HERE, 'overlay.patch.yml')) ? join(HERE, 'overlay.patch.yml') : join(HERE, '..', 'overlay.patch.yml')
+/**
+ * The built web frontend index, loaded over file:// after the boot graph is injected.
+ * Resolved through the `@deepseek-ai/dsh-web-frontend` package (whose `dist` is its
+ * published payload) so the same lookup works in the monorepo and in the packaged
+ * app, where the frontend ships inside the flattened runtime tree rather than at
+ * `apps/web/dist`.
+ */
+const DIST_INDEX = join(dirname(require.resolve('@deepseek-ai/dsh-web-frontend/package.json')), 'dist', 'index.html')
 /** Preload script installing window.dshIpc. */
 const PRELOAD = join(SRC, 'preload.js')
 /** Client packages forced into the graph although their host row is disabled (no webserver). */
@@ -203,15 +216,34 @@ function bridge(api: ApiProxy, connection: HostConnectionService): void {
 
 async function main(): Promise<void> {
   await app.whenReady()
-  const { ctx, profileDir, connection } = await bootHarness()
+  let booted: { ctx: Context; profileDir: string; connection: HostConnectionService }
+  try {
+    booted = await bootHarness()
+  } catch (error) {
+    // Surface the loader's per-entry causes: the boot error aggregates every failed
+    // plugin under nested cause/errors, and the default print drops them.
+    const dump = (e: unknown, depth: number): void => {
+      const rec = e as { message?: string; errors?: unknown[]; cause?: unknown }
+      console.error(`[boot-cause d${depth}]`, rec?.message ?? String(e))
+      if (Array.isArray(rec?.errors)) for (const sub of rec.errors) dump(sub, depth + 1)
+      if (rec?.cause !== undefined) dump(rec.cause, depth + 1)
+    }
+    dump(error, 0)
+    app.exit(1)
+    return
+  }
+  const { ctx, profileDir, connection } = booted
   bridge(resolveApiProxy(ctx), connection)
 
   // Compose the client module graph without a webserver and inject it into the
-  // built frontend index. The injected copy lives beside index.html so its
-  // relative asset refs (./assets/…) keep resolving against the dist directory.
+  // built frontend index. A packaged app ships dist read-only inside the .app, so the
+  // injected index is written under the (writable) profile directory and a <base> tag
+  // points its relative asset refs (./assets/…) back at the packaged dist directory.
   const graph = composeElectronGraph(ctx, profileDir, FORCED_CLIENT_PACKAGES)
+  const baseHref = `${pathToFileURL(join(dirname(DIST_INDEX), '/')).href}`
   const html = injectBootManifest(readFileSync(DIST_INDEX, 'utf8'), graph)
-  const electronIndex = join(dirname(DIST_INDEX), 'index.electron.html')
+    .replace('<head>', `<head><base href="${baseHref}">`)
+  const electronIndex = join(profileDir, 'index.electron.html')
   writeFileSync(electronIndex, html)
 
   // Dispose the composed tree before quitting: every plugin's effects unwind

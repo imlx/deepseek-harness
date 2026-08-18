@@ -39,3 +39,5 @@ worktrees/
 .agents/worktrees/
 .typert-*/
 .electron-notes/
+apps/electron/release/
+apps/electron/runtime/

@@ -17,7 +17,10 @@
     "overlay.patch.yml"
   ],
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "collect-runtime": "node scripts/collect-runtime.mjs runtime",
+    "pack": "electron-builder --config electron-builder.config.mjs",
+    "pack:dmg": "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ electron-builder --config electron-builder.config.mjs --mac dmg"
   },
   "license": "MIT",
   "dependencies": {
@@ -26,7 +29,8 @@
     "@deepseek-ai/dsh-client-connection": "workspace:^",
     "@deepseek-ai/dsh-client-modules": "workspace:^",
     "@deepseek-ai/dsh-host-apiproxy": "workspace:^",
-    "@deepseek-ai/dsh-launch-environment": "workspace:^"
+    "@deepseek-ai/dsh-launch-environment": "workspace:^",
+    "@deepseek-ai/dsh-web-frontend": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
