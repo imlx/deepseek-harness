@@ -103,14 +103,18 @@ async function bootHarness(): Promise<{ ctx: Context; profileDir: string; connec
 
 /** Read the composed ApiProxy service, failing loud if the composition dropped it. */
 function resolveApiProxy(ctx: Context): ApiProxy {
-  const api = (ctx.get('apiProxy') ?? undefined) as ApiProxy | undefined
+  const api = ctx.get('apiProxy')
   if (api === undefined) throw new Error('electron: ctx.apiProxy missing after boot — the overlay must not disable api-gateway')
   return api
 }
 
-/** One open downlink stream's pump task and its owning webContents. */
+/** One open downlink stream's cancel handle plus the gate that holds its pump. */
 interface OpenStream {
   cancel: AbortController
+  /** Resolves once the renderer's stream listener is attached (dsh:streamReady). */
+  markReady: () => void
+  /** Settles when the renderer signals readiness; the pump awaits it before sending. */
+  ready: Promise<void>
 }
 
 /**
@@ -151,13 +155,23 @@ function bridge(api: ApiProxy, connection: HostConnectionService): void {
   ipcMain.handle('dsh:openStream', (event, path: string) => {
     const id = `s${nextStream++}`
     const cancel = new AbortController()
-    streams.set(id, { cancel })
+    let markReady: () => void = () => undefined
+    const ready = new Promise<void>((resolve) => { markReady = resolve })
+    streams.set(id, { cancel, markReady, ready })
     const sender = event.sender
     const iterable = path.endsWith('events.host')
       ? api.events.host({ rpcId: RpcId(crypto.randomUUID()), payload: {} }, cancel.signal)
       : api.events.mux({ rpcId: RpcId(crypto.randomUUID()), payload: {} }, cancel.signal)
     void (async () => {
       try {
+        // Hold the pump until the renderer's channel listener is attached: the
+        // mux/host streams push their baseline frames at open, and an IPC send to
+        // a channel with no listener is silently dropped. Awaiting readiness here
+        // keeps the renderer's initial session/task/approval view complete. Bail
+        // if the renderer is destroyed before it ever signals ready, so a
+        // never-ready stream does not leak.
+        await ready
+        if (sender.isDestroyed()) return
         for await (const frame of iterable) {
           if (sender.isDestroyed()) break
           // The renderer's readIpcStream parses the full ServerRequest form (the same
@@ -175,6 +189,12 @@ function bridge(api: ApiProxy, connection: HostConnectionService): void {
     return id
   })
 
+  // The renderer signals its per-stream listener is attached; the pump holds
+  // until this arrives so no baseline frame is sent into an unlistened channel.
+  ipcMain.on('dsh:streamReady', (_event, id: string) => {
+    streams.get(id)?.markReady()
+  })
+
   ipcMain.on('dsh:closeStream', (_event, id: string) => {
     streams.get(id)?.cancel.abort()
     streams.delete(id)
@@ -189,7 +209,7 @@ async function main(): Promise<void> {
   // Compose the client module graph without a webserver and inject it into the
   // built frontend index. The injected copy lives beside index.html so its
   // relative asset refs (./assets/…) keep resolving against the dist directory.
-  const { graph } = composeElectronGraph(ctx, profileDir, FORCED_CLIENT_PACKAGES)
+  const graph = composeElectronGraph(ctx, profileDir, FORCED_CLIENT_PACKAGES)
   const html = injectBootManifest(readFileSync(DIST_INDEX, 'utf8'), graph)
   const electronIndex = join(dirname(DIST_INDEX), 'index.electron.html')
   writeFileSync(electronIndex, html)

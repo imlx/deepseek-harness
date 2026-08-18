@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('dshIpc', {
     const channel = `dsh:stream:${streamId}`
     const wrapped = (_event, data) => listener(data)
     ipcRenderer.on(channel, wrapped)
+    // Tell the main process the listener is attached so it releases the stream
+    // pump — frames sent before this would be silently dropped by IPC.
+    ipcRenderer.send('dsh:streamReady', streamId)
     return () => { ipcRenderer.removeListener(channel, wrapped) }
   },
   closeStream: (streamId) => { ipcRenderer.send('dsh:closeStream', streamId) },

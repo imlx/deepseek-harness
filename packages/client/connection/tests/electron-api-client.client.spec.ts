@@ -108,6 +108,20 @@ describe('ElectronApiClient', () => {
     expect((ctx.get('connection') as ConnectionHandle).api).toBeInstanceOf(WebApiClient)
   })
 
+  it('reports the Electron bridge as loopback even over a file:// page (empty hostname)', async () => {
+    ipc = new FakeIpc()
+    ;(globalThis as { dshIpc?: DshIpcBridge }).dshIpc = ipc
+    // A file:// origin has an empty hostname, which isLoopbackHostname rejects;
+    // the bridge still proxies the in-process loopback /api gateway, so the
+    // handle must report loopback or Host-backed persistence is dropped.
+    ;(globalThis as Win).location = { hostname: '', search: '' }
+    const ctx = new Context()
+    await ctx.plugin({ apply, inject: [] })
+    const handle = ctx.get('connection') as ConnectionHandle
+    expect(handle.api).toBeInstanceOf(ElectronApiClient)
+    expect(handle.isLoopback).toBe(true)
+  })
+
   it('rides unary calls and respond over dshIpc.fetch, never globalThis.fetch', async () => {
     ipc = new FakeIpc()
     const handle = await mount()

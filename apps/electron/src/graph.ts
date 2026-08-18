@@ -1,18 +1,19 @@
 /**
- * Electron client-module graph composition — the webServer-free counterpart of
+ * The composed client graph: the webServer-free counterpart of
  * `ClientModuleRegistry`'s scan/compose. The registry's composition logic is
  * package-private and its class hard-injects `webServer`, so the Electron shell
  * recomposes the same `WebBootGraph` here from each package's `dsh.client`
  * declaration, resolving bundles through the profile's module anchor. The
  * composed graph is injected into the dist index.html by `injectBootManifest`
- * (the one pure export the modules package shares), and the preload's custom
- * `loadBundle` maps each `/plugins/<id>/client.js` URL onto the absolute
- * `file://` bundle path from {@link composeElectronGraph}'s `bundlePaths`.
+ * (the one pure export the modules package shares); each row's URL is the
+ * bundle's absolute `file://` path, so the module system's default
+ * `<script src>` bundle loader works unchanged over `file://`.
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { injectBootManifest } from '@deepseek-ai/dsh-client-modules'
 import type { WebBootEntry, WebBootGraph } from '@deepseek-ai/dsh-client-modules/client'
@@ -25,17 +26,6 @@ function shortHash(input: string | Buffer): string {
 /** One resolved client package: its boot row plus the absolute bundle path. */
 interface ResolvedClient {
   entry: WebBootEntry
-  clientPath: string
-}
-
-/**
- * The composed client graph plus the id → absolute-bundle-path table the preload
- * needs to resolve `/plugins/<id>/client.js` URLs onto `file://` paths.
- */
-export interface ElectronClientGraph {
-  graph: WebBootGraph
-  /** id → absolute path of the built `client.js` bundle. */
-  bundlePaths: ReadonlyMap<string, string>
 }
 
 /**
@@ -71,19 +61,21 @@ function resolveClient(resolvePkgJson: (spec: string) => string, pkgName: string
   const clientPath = join(dirname(pkgPath), clientRel)
   const rev = shortHash(readFileSync(clientPath))
   const inject = Array.isArray(decl.inject) ? decl.inject.filter((edge): edge is string => typeof edge === 'string') : undefined
-  // The row URL is the bundle's absolute file:// path, not the webserver's
-  // /plugins/<id>/client.js route: over file:// the module system's
-  // defaultLoadBundle (<script src>) loads it directly, so no custom loadBundle
-  // or Electron-specific frontend entry is needed (probed: a file:// page
-  // executes an injected classic file:// script and registers its factory).
+  // The row URL is the bundle's absolute file:// path (percent-encoded via
+  // pathToFileURL so installs under directories with spaces or URL-reserved
+  // characters still resolve), not the webserver's /plugins/<id>/client.js route:
+  // over file:// the module system's defaultLoadBundle (<script src>) loads it
+  // directly, so no custom loadBundle or Electron-specific frontend entry is
+  // needed (probed: a file:// page executes an injected classic file:// script
+  // and registers its factory).
   const entry: WebBootEntry = {
     id: pkgName,
-    url: `file://${clientPath}?rev=${rev}`,
+    url: `${pathToFileURL(clientPath).href}?rev=${rev}`,
     rev,
     ...(inject !== undefined ? { inject } : {}),
     ...(decl.immediately === true ? { immediately: true } : {}),
   }
-  return { entry, clientPath }
+  return { entry }
 }
 
 /**
@@ -94,13 +86,13 @@ function resolveClient(resolvePkgJson: (spec: string) => string, pkgName: string
  * @param ctx - the booted root context (its loader entries are the scan source).
  * @param profileDir - the profile directory used as the module-resolution anchor.
  * @param extraClientPackages - client packages to force into the graph (e.g. connection).
- * @returns the composed graph plus the bundle-path table for the preload.
+ * @returns the composed graph.
  */
 export function composeElectronGraph(
   ctx: Context,
   profileDir: string,
   extraClientPackages: readonly string[],
-): ElectronClientGraph {
+): WebBootGraph {
   const require = createRequire(join(profileDir, 'package.json'))
   const resolvePkgJson = (spec: string): string => require.resolve(spec)
 
@@ -111,14 +103,12 @@ export function composeElectronGraph(
   for (const extra of extraClientPackages) names.add(extra)
 
   const entries: WebBootEntry[] = []
-  const bundlePaths = new Map<string, string>()
   for (const name of names) {
     const resolved = resolveClient(resolvePkgJson, name)
     if (resolved === undefined) continue
     entries.push(resolved.entry)
-    bundlePaths.set(name, resolved.clientPath)
   }
-  return { graph: { rev: shortHash(JSON.stringify(entries)), entries }, bundlePaths }
+  return { rev: shortHash(JSON.stringify(entries)), entries }
 }
 
 export { injectBootManifest }

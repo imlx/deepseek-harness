@@ -109,7 +109,11 @@ export function apply(ctx: Context): void {
   }
   const handle: ConnectionHandle = {
     api,
-    isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),
+    // Loopback when the page authority is loopback — or when the carrier is the
+    // Electron IPC bridge, which proxies the in-process loopback /api gateway
+    // over file:// (whose empty hostname isLoopbackHostname rejects, so the URL
+    // check alone would misclassify it as remote and drop Host persistence).
+    isLoopback: electron || pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),
     hostDescription: {
       getSnapshot: () => description,
       subscribe: (listener) => {
