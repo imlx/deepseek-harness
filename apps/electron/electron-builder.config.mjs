@@ -8,10 +8,15 @@
  *    web frontend. It ships as loose files (not in the asar) because the loader
  *    resolves packages by their real path and builds symlinks against them.
  *
- * The DMG is unsigned by default; signing is enabled by setting CSC_LINK /
- * CSC_KEY_PASSWORD (and notarization via APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD /
- * APPLE_TEAM_ID) in the environment — see the packaging notes.
+ * Signing and notarization are opt-in via the environment. Set DSH_SIGN_IDENTITY to
+ * the Developer ID Application certificate's full name (or rely on the default
+ * keychain lookup) to sign; set APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD /
+ * APPLE_TEAM_ID (or APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER) to notarize.
+ * With neither set the build stays unsigned, which is right for local runs.
  */
+
+const identity = process.env.DSH_SIGN_IDENTITY ?? null
+const notarize = process.env.APPLE_TEAM_ID !== undefined || process.env.APPLE_API_KEY !== undefined
 
 /** @type {import('electron-builder').Configuration} */
 export default {
@@ -56,8 +61,22 @@ export default {
   mac: {
     category: 'public.app-category.developer-tools',
     target: ['dmg'],
-    // Unsigned local builds; identity is picked up from CSC_LINK when provided.
-    identity: null,
+    icon: 'build/icon.icns',
+    identity,
+    // Notarize only when the Apple credentials are present; unsigned local builds
+    // skip both steps.
+    notarize,
+    // Hardened runtime + entitlements are required for notarization.
+    hardenedRuntime: true,
+    gatekeeperAssess: false,
+  },
+  win: {
+    icon: 'build/icon.png',
+    target: ['nsis'],
+  },
+  linux: {
+    icon: 'build/icon.png',
+    target: ['AppImage'],
   },
   dmg: {
     title: 'DeepSeek Harness',
