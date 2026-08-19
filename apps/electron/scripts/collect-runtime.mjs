@@ -127,11 +127,12 @@ console.log(`collect-runtime: copied ${copied} packages into ${relative(process.
 
 // The main process's top-level static imports resolve through Node's ESM resolution,
 // which walks up from lib/ to app/node_modules — not through the runtime-anchored
-// createRequire the dynamic loader uses. Only the handful of packages main.js imports
-// statically are mirrored (real copies; symlinks proved unreliable when packaged).
-// Their own transitive imports stay bare specifiers that fall through to the runtime
-// anchor at require time, so the mirror stays small instead of duplicating the tree.
-const APP_IMPORTS = [
+// createRequire the dynamic loader uses. The whole static-import closure of those entry
+// packages must sit in app/node_modules, because each package's own static imports
+// (js-yaml, cordis, …) resolve by walking up from that package's location inside
+// app/node_modules. The closure is walked over declared dependencies and mirrored as
+// real copies (symlinks proved unreliable when packaged).
+const ENTRY_IMPORTS = [
   '@deepseek-ai/dsh-app-boot',
   '@deepseek-ai/dsh-launch-environment',
   '@deepseek-ai/dsh-client-connection',
@@ -140,14 +141,19 @@ const APP_IMPORTS = [
 ]
 const appModulesOut = join(APP_DIR, 'appdeps')
 rmSync(appModulesOut, { recursive: true, force: true })
-for (const name of APP_IMPORTS) {
+const mirrored = new Set()
+const mirrorQueue = [...ENTRY_IMPORTS]
+for (let name = mirrorQueue.shift(); name !== undefined; name = mirrorQueue.shift()) {
+  if (mirrored.has(name)) continue
   const src = join(modulesOut, name)
-  const dst = join(appModulesOut, name)
-  if (!existsSync(src)) { console.log(`[mirror-skip] ${name} (no src)`); continue }
-  mkdirSync(dirname(dst), { recursive: true })
-  cpSync(src, dst, { recursive: true, dereference: true })
+  if (!existsSync(src)) continue
+  mirrored.add(name)
+  mkdirSync(dirname(join(appModulesOut, name)), { recursive: true })
+  cpSync(src, join(appModulesOut, name), { recursive: true, dereference: true })
+  const manifest = readManifest(src)
+  if (manifest !== undefined) for (const dep of declaredDeps(manifest)) mirrorQueue.push(dep)
 }
-console.log(`collect-runtime: mirrored ${APP_IMPORTS.length} entry packages into appdeps/`)
+console.log(`collect-runtime: mirrored ${mirrored.size} packages (static closure) into appdeps/`)
 
 // Stage the static assets the packaged main.js loads from beside itself: the preload
 // bridge and the composition overlay. Dev resolves them from src/; the packaged app
