@@ -97,6 +97,8 @@ function copyPackage(realDir, destDir, name) {
   })
 }
 
+
+
 // Walk the closure from the app's direct dependencies. The install anchor for the dsh
 // profile is @deepseek-ai/dsh (apps/cli); the Electron app also needs its own direct deps.
 const ROOTS = ['@deepseek-ai/dsh']
@@ -122,6 +124,30 @@ for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
 }
 
 console.log(`collect-runtime: copied ${copied} packages into ${relative(process.cwd(), outDir)}`)
+
+// The main process's top-level static imports resolve through Node's ESM resolution,
+// which walks up from lib/ to app/node_modules — not through the runtime-anchored
+// createRequire the dynamic loader uses. Only the handful of packages main.js imports
+// statically are mirrored (real copies; symlinks proved unreliable when packaged).
+// Their own transitive imports stay bare specifiers that fall through to the runtime
+// anchor at require time, so the mirror stays small instead of duplicating the tree.
+const APP_IMPORTS = [
+  '@deepseek-ai/dsh-app-boot',
+  '@deepseek-ai/dsh-launch-environment',
+  '@deepseek-ai/dsh-client-connection',
+  '@deepseek-ai/dsh-host-apiproxy',
+  '@deepseek-ai/dsh-client-modules',
+]
+const appModulesOut = join(APP_DIR, 'appdeps')
+rmSync(appModulesOut, { recursive: true, force: true })
+for (const name of APP_IMPORTS) {
+  const src = join(modulesOut, name)
+  const dst = join(appModulesOut, name)
+  if (!existsSync(src)) { console.log(`[mirror-skip] ${name} (no src)`); continue }
+  mkdirSync(dirname(dst), { recursive: true })
+  cpSync(src, dst, { recursive: true, dereference: true })
+}
+console.log(`collect-runtime: mirrored ${APP_IMPORTS.length} entry packages into appdeps/`)
 
 // Stage the static assets the packaged main.js loads from beside itself: the preload
 // bridge and the composition overlay. Dev resolves them from src/; the packaged app

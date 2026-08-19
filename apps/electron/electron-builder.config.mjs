@@ -28,12 +28,19 @@ export default {
   // virtual paths cannot back, and asarUnpack does not honor appDir-relative globs in
   // a pnpm monorepo. Everything ships as plain files under Resources/app/.
   asar: false,
+  // In a pnpm monorepo electron-builder auto-collects the whole workspace into
+  // node_modules; the negation drops that so only our explicit entries ship.
   files: [
     'lib/main.js',
     'lib/preload.js',
     'lib/overlay.patch.yml',
     'package.json',
     'runtime/**',
+    // The main process's own static imports resolve from app/node_modules (Node ESM
+    // walks up from lib/), distinct from the runtime tree the dynamic loader uses.
+    // collect-runtime mirrors just those entry packages into appdeps/; map it onto
+    // app/node_modules here.
+    { from: 'appdeps', to: 'node_modules' },
     '!node_modules/**',
   ],
   // Regenerate the flattened runtime immediately before packing so extraResources

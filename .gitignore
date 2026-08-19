@@ -41,3 +41,4 @@ worktrees/
 .electron-notes/
 apps/electron/release/
 apps/electron/runtime/
+apps/electron/appdeps/
