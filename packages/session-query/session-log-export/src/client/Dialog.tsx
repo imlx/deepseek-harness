@@ -34,7 +34,11 @@ export function SessionLogDownloadDialog({
     : status === 'success' ? t('dialog.successTitle') : t('dialog.errorTitle')
   const description = status === 'downloading'
     ? t('dialog.preparingDescription')
-    : status === 'success' ? t('dialog.successDescription') : error ?? t('dialog.commandFailed')
+    : status === 'success'
+      ? (entry?.savedPath !== undefined
+        ? t('dialog.successDescriptionElectron', { path: entry.savedPath })
+        : t('dialog.successDescription'))
+      : error ?? t('dialog.commandFailed')
 
   return (
     <Modal

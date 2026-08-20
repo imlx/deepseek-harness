@@ -44,7 +44,7 @@ describe('Session export Header action', () => {
     expect(button.querySelector('svg')).not.toBeNull()
     fireEvent.click(button)
     await waitFor(() => { expect(b.request).toHaveBeenCalledWith(SID) })
-    expect(await b.view.findByRole('dialog', { name: 'Session download started' })).toBeTruthy()
+    expect(await b.view.findByRole('dialog', { name: 'Session exported' })).toBeTruthy()
   })
 
   it('disables the capsule while either entry path downloads this Session', async () => {

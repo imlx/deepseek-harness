@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 import { writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import { DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import {
@@ -165,6 +166,34 @@ function bridge(api: ApiProxy, connection: HostConnectionService): void {
     return { status: response.status, body: await response.text() }
   })
 
+  // Binary variant of dsh:fetch for the host download surfaces (session.export's
+  // ZIP). The unary channel above returns text; a ZIP cannot survive that, so this
+  // carries the body as a byte array. The session-log export controller's HEAD
+  // preflight and the renderer's download both ride this.
+  ipcMain.handle('dsh:fetchBinary', async (_event, path: string, init: { method?: string }) => {
+    const request = new Request(new URL(path, 'http://dsh.internal'), { method: init.method ?? 'GET' })
+    const response = await handler.fetch(request)
+    const bytes = response.body === null ? [] : Array.from(new Uint8Array(await response.arrayBuffer()))
+    return { status: response.status, headers: Object.fromEntries(response.headers), bytes }
+  })
+
+  // The host download surfaces (session.export's ZIP) are host-only GET channels the
+  // browser fetch never reaches — under file:// the `dsh.internal` base the client
+  // builds is not a real host, so the download would 404 on the network. The main
+  // process fetches the ZIP through the gateway and writes it to the user's Downloads
+  // folder, matching the web surface's native-download behavior.
+  ipcMain.handle('dsh:download', async (event, path: string, filename: string) => {
+    const response = await handler.fetch(new Request(new URL(path, 'http://dsh.internal'), { method: 'GET' }))
+    if (!response.ok || response.body === null) {
+      return { ok: false, status: response.status }
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    const target = join(app.getPath('downloads'), filename)
+    await writeFile(target, bytes)
+    void event
+    return { ok: true, path: target }
+  })
+
   ipcMain.handle('dsh:openStream', (event, path: string) => {
     const id = `s${nextStream++}`
     const cancel = new AbortController()
@@ -223,10 +252,14 @@ async function main(): Promise<void> {
     // Surface the loader's per-entry causes: the boot error aggregates every failed
     // plugin under nested cause/errors, and the default print drops them.
     const dump = (e: unknown, depth: number): void => {
+      if (e === null || typeof e !== 'object') {
+        console.error(`[boot-cause d${depth}]`, String(e))
+        return
+      }
       const rec = e as { message?: string; errors?: unknown[]; cause?: unknown }
-      console.error(`[boot-cause d${depth}]`, rec?.message ?? String(e))
-      if (Array.isArray(rec?.errors)) for (const sub of rec.errors) dump(sub, depth + 1)
-      if (rec?.cause !== undefined) dump(rec.cause, depth + 1)
+      console.error(`[boot-cause d${depth}]`, rec.message ?? JSON.stringify(e))
+      if (rec.errors !== undefined) for (const sub of rec.errors) dump(sub, depth + 1)
+      if (rec.cause !== undefined) dump(rec.cause, depth + 1)
     }
     dump(error, 0)
     app.exit(1)
@@ -240,7 +273,7 @@ async function main(): Promise<void> {
   // injected index is written under the (writable) profile directory and a <base> tag
   // points its relative asset refs (./assets/…) back at the packaged dist directory.
   const graph = composeElectronGraph(ctx, profileDir, FORCED_CLIENT_PACKAGES)
-  const baseHref = `${pathToFileURL(join(dirname(DIST_INDEX), '/')).href}`
+  const baseHref = pathToFileURL(join(dirname(DIST_INDEX), '/')).href
   const html = injectBootManifest(readFileSync(DIST_INDEX, 'utf8'), graph)
     .replace('<head>', `<head><base href="${baseHref}">`)
   const electronIndex = join(profileDir, 'index.electron.html')

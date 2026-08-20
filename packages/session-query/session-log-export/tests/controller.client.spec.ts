@@ -144,3 +144,47 @@ describe('browser download helpers', () => {
     expect(anchor.download).toBe('archive.zip')
   })
 })
+
+describe('Electron bridge path', () => {
+  it('rides the preload bridge and reports the saved path', async () => {
+    const fetchBinary = vi.fn(async () => ({ status: 200, ok: true, bytes: new Uint8Array() }))
+    const download = vi.fn(async () => ({ ok: true, path: '/Users/x/Downloads/archive.zip' }))
+    vi.stubGlobal('dshIpc', { fetchBinary, download })
+    const controller = new SessionLogDownloadController(vi.fn(), vi.fn())
+
+    await controller.download(SID)
+
+    expect(fetchBinary).toHaveBeenCalledOnce()
+    expect(download).toHaveBeenCalledWith(
+      '/api/session.export?sessionId=session-export-controller&includeDescendants=true',
+      'dsh-session-session-export-controller.zip',
+    )
+    expect(controller.store.getSnapshot().bySession[SID]).toEqual({
+      open: true, status: 'success', error: null, savedPath: '/Users/x/Downloads/archive.zip',
+    })
+  })
+
+  it('fails loud when the bridge reports a non-OK preflight or download', async () => {
+    const fetchBinary = vi.fn(async () => ({ status: 500, ok: false, bytes: new Uint8Array() }))
+    const download = vi.fn(async () => ({ ok: false, status: 500 }))
+    vi.stubGlobal('dshIpc', { fetchBinary, download })
+    const controller = new SessionLogDownloadController(vi.fn(), vi.fn())
+
+    await controller.download(SID)
+
+    expect(controller.store.getSnapshot().bySession[SID]?.status).toBe('error')
+    expect(controller.store.getSnapshot().bySession[SID]?.error).toContain('500')
+  })
+
+  it('fails loud when the download reports an unknown status', async () => {
+    const fetchBinary = vi.fn(async () => ({ status: 200, ok: true, bytes: new Uint8Array() }))
+    const download = vi.fn(async () => ({ ok: false }))
+    vi.stubGlobal('dshIpc', { fetchBinary, download })
+    const controller = new SessionLogDownloadController(vi.fn(), vi.fn())
+
+    await controller.download(SID)
+
+    expect(controller.store.getSnapshot().bySession[SID]?.status).toBe('error')
+    expect(controller.store.getSnapshot().bySession[SID]?.error).toContain('unknown')
+  })
+})

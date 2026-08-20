@@ -10,6 +10,8 @@ export interface SessionLogDownloadEntry {
   readonly open: boolean
   readonly status: SessionLogDownloadStatus
   readonly error: string | null
+  /** The path the file was written to (Electron only; absent on the web surface). */
+  readonly savedPath?: string | undefined
 }
 
 /** Download states keyed by the Session whose Header owns the dialog. */
@@ -41,6 +43,17 @@ export function downloadUrl(url: string, filename: string): void {
   anchor.href = url
   anchor.download = filename
   anchor.click()
+}
+
+/** The Electron preload bridge surface this controller uses when present. */
+interface ElectronDownloadBridge {
+  fetchBinary(path: string, init?: { method?: string }): Promise<{ status: number; ok: boolean; bytes: Uint8Array }>
+  download(path: string, filename: string): Promise<{ ok: boolean; status?: number; path?: string }>
+}
+
+/** The Electron preload's window.dshIpc bridge, when running inside the desktop shell. */
+function electronBridge(): ElectronDownloadBridge | undefined {
+  return (globalThis as { dshIpc?: ElectronDownloadBridge }).dshIpc
 }
 
 /** Resolve the browser's Host base with the connection carrier's null-origin fallback. */
@@ -114,12 +127,27 @@ export class SessionLogDownloadController {
       const url = new URL('/api/session.export', hostBase())
       url.searchParams.set('sessionId', sessionId)
       url.searchParams.set('includeDescendants', 'true')
-      const response = await this.fetcher(url, { method: 'HEAD', signal })
-      if (!response.ok) {
-        const detail = await response.text().catch(() => '')
-        throw new Error(`Export failed: HTTP ${response.status}${detail === '' ? '' : ` ${detail}`}`)
+      const bridge = electronBridge()
+      if (bridge !== undefined) {
+        // Electron: the page is file://, so the dsh.internal base the URL carries is
+        // not a real host. The HEAD preflight and the download both ride the preload
+        // bridge into the main process, which answers them through the gateway.
+        const preflight = await bridge.fetchBinary(url.pathname + url.search, { method: 'HEAD' })
+        if (!preflight.ok) throw new Error(`Export failed: HTTP ${preflight.status}`)
+        const result = await bridge.download(url.pathname + url.search, sessionLogZipFilename(sessionId))
+        if (!result.ok) throw new Error(`Export failed: HTTP ${result.status ?? 'unknown'}`)
+        // Electron writes the file directly to the user's Downloads folder; there is
+        // no browser download manager, so the dialog reports where the file landed.
+        this.publish(sessionId, { open: true, status: 'success', error: null, savedPath: result.path })
+        return
+      } else {
+        const response = await this.fetcher(url, { method: 'HEAD', signal })
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '')
+          throw new Error(`Export failed: HTTP ${response.status}${detail === '' ? '' : ` ${detail}`}`)
+        }
+        this.save(url.toString(), sessionLogZipFilename(sessionId))
       }
-      this.save(url.toString(), sessionLogZipFilename(sessionId))
       const open = this.store.getSnapshot().bySession[String(sessionId)]?.open ?? true
       this.publish(sessionId, { open, status: 'success', error: null })
     } catch (error: unknown) {

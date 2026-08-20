@@ -22,7 +22,12 @@ function bench(
       () => selector(controller.store.getSnapshot()),
     )
   }
-  const t = (key: keyof typeof en): string => en[key]
+  const t = (key: keyof typeof en, params?: Record<string, unknown>): string => {
+    const template = en[key]
+    if (params === undefined) return template
+    return template.replace(/\{(\w+)\}/g, (match, name: string) =>
+      name in params ? String(params[name]) : match)
+  }
   const props = { sessionId: SID, useSessionLogDownload, dismiss, t } as unknown as SessionLogDownloadDialogProps
   const view = render(<SessionLogDownloadDialog {...props} />)
   return { controller, dismiss, view }
@@ -56,7 +61,7 @@ describe('SessionLogDownloadDialog', () => {
     expect(await b.view.findByRole('dialog', { name: 'Exporting Session' })).toBeTruthy()
     release(new Response('zip', { status: 200 }))
     await download
-    expect(await b.view.findByRole('dialog', { name: 'Session download started' })).toBeTruthy()
+    expect(await b.view.findByRole('dialog', { name: 'Session exported' })).toBeTruthy()
   })
 
   it('uses fallback copy when a failure has no detail', async () => {
@@ -72,5 +77,16 @@ describe('SessionLogDownloadDialog', () => {
     if (close === undefined) throw new Error('Session export dialog has no footer action')
     fireEvent.click(close)
     await waitFor(() => { expect(b.dismiss).toHaveBeenCalledWith(SID) })
+  })
+
+  it('reports the saved path when the Electron bridge wrote the file', async () => {
+    const b = bench()
+    act(() => {
+      b.controller.store.set({
+        bySession: { [SID]: { open: true, status: 'success', error: null, savedPath: '/Users/x/Downloads/archive.zip' } },
+      })
+    })
+    const dialog = await b.view.findByRole('dialog', { name: 'Session exported' })
+    expect(dialog.textContent).toContain('Session ZIP saved to: /Users/x/Downloads/archive.zip')
   })
 })
