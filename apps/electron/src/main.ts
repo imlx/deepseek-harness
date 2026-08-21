@@ -34,6 +34,7 @@ import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { RpcId, type ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { HostFrame, MuxFrame, RpcRequest, ServerRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { composeElectronGraph, injectBootManifest } from './graph.ts'
+import { subscribeMuxEvents } from './events.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 // Module resolution anchor: packaged ships the flattened dsh runtime at app/runtime/
@@ -266,7 +267,19 @@ async function main(): Promise<void> {
     return
   }
   const { ctx, profileDir, connection } = booted
-  bridge(resolveApiProxy(ctx), connection)
+  const api = resolveApiProxy(ctx)
+  bridge(api, connection)
+
+  // The shell↔dsh bridge foundation (D0): one main-process subscription to the
+  // authoritative mux stream, off which every desktop capability (notifications,
+  // tray, plugin management) hangs. It reuses `api.events.mux()` — no new
+  // transport, endpoint, or local server. D1 wires the notification sink in; for
+  // now the subscription proves the channel end-to-end and surfaces stream
+  // failures to the console rather than letting them escape the pump.
+  const detachMux = subscribeMuxEvents(api.events, {
+    onError: (error) => { console.error('[electron] mux stream error', error) },
+  })
+  app.on('window-all-closed', detachMux)
 
   // Compose the client module graph without a webserver and inject it into the
   // built frontend index. A packaged app ships dist read-only inside the .app, so the
