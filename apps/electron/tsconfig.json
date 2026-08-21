@@ -24,6 +24,9 @@
       "path": "../../packages/interaction/user-questions"
     },
     {
+      "path": "../../packages/interaction/desktop-notifications"
+    },
+    {
       "path": "../../packages/client/connection/tsconfig.host.json"
     },
     {

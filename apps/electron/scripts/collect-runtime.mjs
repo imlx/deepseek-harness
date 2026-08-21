@@ -108,14 +108,19 @@ function copyPackage(realDir, destDir, name) {
 
 // Walk the closure from the app's direct dependencies. The install anchor for the dsh
 // profile is @deepseek-ai/dsh (apps/cli); the Electron app also needs its own direct deps.
+// Overlay-mounted plugins the dsh profile does not depend on (the desktop-notifications
+// consumer) are the shell's own direct dependencies. The shell package does not resolve
+// as a root from its own directory, so seed the queue with its declared deps directly.
 const ROOTS = ['@deepseek-ai/dsh']
+const appManifest = readManifest(APP_DIR)
+const shellDeps = appManifest === undefined ? [] : declaredDeps(appManifest)
 const visited = new Map() // name -> realDir
 
 rmSync(outDir, { recursive: true, force: true })
 const modulesOut = join(outDir, 'node_modules')
 mkdirSync(modulesOut, { recursive: true })
 
-const queue = ROOTS.map(name => ({ name, fromDir: APP_DIR }))
+const queue = [...ROOTS, ...shellDeps].map(name => ({ name, fromDir: APP_DIR }))
 let copied = 0
 for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
   if (visited.has(item.name)) continue

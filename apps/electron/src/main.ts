@@ -12,7 +12,7 @@
  * builds on the public `@deepseek-ai/dsh-app-boot` API so the Electron shell
  * does not depend on the CLI package's unpublished internals.
  */
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, Notification, ipcMain } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
@@ -33,6 +33,11 @@ import { HostConnectionService } from '@deepseek-ai/dsh-client-connection'
 import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { RpcId, type ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { HostFrame, MuxFrame, RpcRequest, ServerRequest } from '@deepseek-ai/dsh-host-apiproxy/api'
+import {
+  DESKTOP_NOTIFICATIONS_KEY,
+  type DesktopNotification,
+  type DesktopNotificationSink,
+} from '@deepseek-ai/dsh-desktop-notifications'
 import { composeElectronGraph, injectBootManifest } from './graph.ts'
 import { subscribeMuxEvents } from './events.ts'
 
@@ -84,6 +89,12 @@ const ROOT_CONFIG = '# electron validation root — empty entry list.\n[]\n'
  */
 async function bootHarness(): Promise<{ ctx: Context; profileDir: string; connection: HostConnectionService }> {
   healProfilesModuleFallback(INSTALL_ANCHOR)
+  // Heal from the shell's own manifest too: overlay-mounted plugins the dsh profile
+  // does not depend on (the desktop-notifications consumer) are the shell's direct
+  // dependencies, and the dev-mode loader resolves plugins from the profile's module
+  // fallback. The heal is idempotent, so the second pass only adds the shell's deps.
+  // In the packaged app the runtime tree ships the plugin, so this is a dev-mode need.
+  healProfilesModuleFallback(join(HERE, '..', 'package.json'))
   const profile = loadProfile(BIN, 'web', INSTALL_ANCHOR)
   const rootConfig = join(profile.dir, 'cordis.yml')
   writeFileSync(rootConfig, ROOT_CONFIG)
@@ -105,6 +116,9 @@ async function bootHarness(): Promise<{ ctx: Context; profileDir: string; connec
   let connection: HostConnectionService | undefined
   const ctx = await boot(BIN, rootConfig, patches, (hostCtx: Context) => {
     hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, environment)
+    // Provide the shell's notification adapter before any config entry mounts, so
+    // the desktop-notifications plugin can probe it during composition.
+    hostCtx.provide(DESKTOP_NOTIFICATIONS_KEY, createNotificationSink())
     // The overlay disables the connection row (its host half injects webServer),
     // but the shell still needs the host Connection RPC registry: instantiating the
     // service here provides ctx.connection on the root, and its interceptor path
@@ -121,6 +135,37 @@ function resolveApiProxy(ctx: Context): ApiProxy {
   const api = ctx.get('apiProxy')
   if (api === undefined) throw new Error('electron: ctx.apiProxy missing after boot — the overlay must not disable api-gateway')
   return api
+}
+
+/**
+ * The window the notification adapter reports focus for and focuses on click.
+ * The sink is provided before boot (so the notifications plugin can probe it),
+ * but the BrowserWindow exists only after boot, so the adapter reads this late
+ * reference: before the window is created the app is treated as unfocused (it
+ * cannot be showing), and `focus` is a no-op until there is a window to raise.
+ */
+let currentWindow: BrowserWindow | undefined
+
+/**
+ * The shell's `DesktopNotificationSink` backed by Electron's `Notification`.
+ * `notify` never throws — a notification is best-effort attention, and
+ * `Notification.isSupported()` is false on platforms without a notification
+ * center, where the call degrades to a no-op.
+ */
+function createNotificationSink(): DesktopNotificationSink {
+  return {
+    get locale(): 'en' | 'zh' {
+      return app.getLocale().startsWith('zh') ? 'zh' : 'en'
+    },
+    notify(notification: DesktopNotification): void {
+      if (!Notification.isSupported()) return
+      const native = new Notification({ title: notification.title, body: notification.body })
+      native.on('click', () => { currentWindow?.show(); currentWindow?.focus() })
+      native.show()
+    },
+    isFocused: () => currentWindow?.isFocused() ?? false,
+    focus: () => { currentWindow?.show(); currentWindow?.focus() },
+  }
 }
 
 /** One open downlink stream's cancel handle plus the gate that holds its pump. */
@@ -303,6 +348,8 @@ async function main(): Promise<void> {
     height: 720,
     webPreferences: { preload: PRELOAD, contextIsolation: true, nodeIntegration: false },
   })
+  currentWindow = win
+  win.on('closed', () => { currentWindow = undefined })
   await win.loadFile(electronIndex)
 }
 

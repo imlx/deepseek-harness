@@ -48,3 +48,11 @@
 - insert:
     - id: directory-picker-native
       name: '@deepseek-ai/dsh-host-directory-picker-native'
+
+# Native notifications for user-initiated turn completion/failure, background
+# job settlement, and approval requests. The plugin reads the shell-provided
+# `desktopNotifications` adapter (Electron's Notification) and the live settings
+# scope; it needs no webServer, so it mounts cleanly in the port-less composition.
+- insert:
+    - id: desktop-notifications
+      name: '@deepseek-ai/dsh-desktop-notifications'
