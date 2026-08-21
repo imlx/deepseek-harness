@@ -47,6 +47,11 @@ export default {
     // app/node_modules here.
     { from: 'appdeps', to: 'node_modules' },
     '!node_modules/**',
+    // Cross-platform native binaries (node-pty's Windows ConPTY, etc.) ship in the
+    // package but are not Mach-O, so Apple's notary service rejects the archive.
+    // Exclude them from the mac build; they belong to the Windows package.
+    '!runtime/**/prebuilds/win32-*/**',
+    '!runtime/**/prebuilds/linux-*/**',
   ],
   // Regenerate the flattened runtime immediately before packing so extraResources
   // always sees a fresh tree regardless of invocation order.

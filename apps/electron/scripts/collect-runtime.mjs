@@ -92,7 +92,14 @@ function copyPackage(realDir, destDir, name) {
     dereference: true,
     filter: (src) => {
       const top = src.slice(realDir.length).replace(/^[/\\]+/, '').split(/[/\\]/)[0]
-      return !skip.includes(top)
+      if (skip.includes(top)) return false
+      // Cross-platform native binaries (node-pty's Windows ConPTY, etc.) are not Mach-O,
+      // so Apple's notary service rejects the archive. Keep only the current platform's.
+      if (src.includes('/prebuilds/')) {
+        const platform = src.match(/\/prebuilds\/([^/]+)/)?.[1]
+        return platform === 'darwin-arm64' || platform === 'darwin-x64'
+      }
+      return true
     },
   })
 }
