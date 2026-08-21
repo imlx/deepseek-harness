@@ -270,11 +270,11 @@ async function main(): Promise<void> {
   const api = resolveApiProxy(ctx)
   bridge(api, connection)
 
-  // The shell↔dsh bridge foundation (D0): one main-process subscription to the
+  // The shell↔dsh bridge foundation: one main-process subscription to the
   // authoritative mux stream, off which every desktop capability (notifications,
   // tray, plugin management) hangs. It reuses `api.events.mux()` — no new
-  // transport, endpoint, or local server. D1 wires the notification sink in; for
-  // now the subscription proves the channel end-to-end and surfaces stream
+  // transport, endpoint, or local server. The notification sink wires in next;
+  // for now the subscription proves the channel end-to-end and surfaces stream
   // failures to the console rather than letting them escape the pump.
   const detachMux = subscribeMuxEvents(api.events, {
     onError: (error) => { console.error('[electron] mux stream error', error) },

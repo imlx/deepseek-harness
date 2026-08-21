@@ -1,7 +1,7 @@
 /**
  * Reusable main-process subscription to the dsh session-event stream.
  *
- * This is the shell↔dsh bridge foundation (task D0): the single channel every
+ * This is the shell↔dsh bridge foundation: the single channel every
  * desktop capability (notifications, tray, plugin management) hangs off. It
  * rides the **existing** host mux stream — `api.events.mux()`, the same
  * downlink the renderer consumes over the IPC bridge — so the shell adds no
