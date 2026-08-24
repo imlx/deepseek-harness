@@ -147,6 +147,21 @@ function resolveApiProxy(ctx: Context): ApiProxy {
 let currentWindow: BrowserWindow | undefined
 
 /**
+ * Raise the main window to the front. On macOS `win.show()`/`win.focus()` alone
+ * do not bring a minimized window forward: the application must first become the
+ * active app (`app.focus()`), and a minimized window must be restored before it
+ * can take focus. Safe to call before the window exists (no-op).
+ */
+function focusMainWindow(): void {
+  const win = currentWindow
+  if (win === undefined) return
+  app.focus()
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
+/**
  * The shell's `DesktopNotificationSink` backed by Electron's `Notification`.
  * `notify` never throws — a notification is best-effort attention, and
  * `Notification.isSupported()` is false on platforms without a notification
@@ -160,11 +175,11 @@ function createNotificationSink(): DesktopNotificationSink {
     notify(notification: DesktopNotification): void {
       if (!Notification.isSupported()) return
       const native = new Notification({ title: notification.title, body: notification.body })
-      native.on('click', () => { currentWindow?.show(); currentWindow?.focus() })
+      native.on('click', focusMainWindow)
       native.show()
     },
     isFocused: () => currentWindow?.isFocused() ?? false,
-    focus: () => { currentWindow?.show(); currentWindow?.focus() },
+    focus: focusMainWindow,
   }
 }
 
